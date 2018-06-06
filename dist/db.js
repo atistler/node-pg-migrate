@@ -1,0 +1,96 @@
+"use strict";
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+
+var _pg = require("pg");
+
+var _pg2 = _interopRequireDefault(_pg);
+
+function _interopRequireDefault(obj) {
+  return obj && obj.__esModule ? obj : { default: obj };
+}
+
+// or native libpq bindings
+// import pg from 'pg/native';
+
+exports.default = (connectionString, log = console.error) => {
+  const client = new _pg2.default.Client(connectionString);
+  let clientActive = false;
+  const beforeCloseListeners = [];
+
+  const createConnection = () =>
+    new Promise(
+      (resolve, reject) =>
+        clientActive
+          ? resolve()
+          : client.connect(err => {
+              if (err) {
+                log("could not connect to postgres", err);
+                return reject(err);
+              }
+              clientActive = true;
+              return resolve();
+            })
+    );
+
+  const query = (...args) =>
+    createConnection()
+      .then(() => client.query(...args))
+      .catch(err => {
+        const message = err.message,
+          position = err.position;
+
+        const string = args[0].text || args[0];
+        if (message && position >= 1) {
+          const endLineWrapIndexOf = string.indexOf("\n", position);
+          const endLineWrapPos =
+            endLineWrapIndexOf >= 0 ? endLineWrapIndexOf : string.length;
+          const stringStart = string.substring(0, endLineWrapPos);
+          const stringEnd = string.substr(endLineWrapPos);
+          const startLineWrapPos = stringStart.lastIndexOf("\n") + 1;
+          const padding = " ".repeat(position - startLineWrapPos - 1);
+          log(`Error executing:
+${stringStart}
+${padding}^^^^${stringEnd}
+
+${message}
+`);
+        } else {
+          log(`Error executing:
+${string}
+${err}
+`);
+        }
+        throw err;
+      });
+
+  const select = string => query(string).then(result => result && result.rows);
+  const column = (string, columnName) =>
+    select(string).then(rows => rows.map(r => r[columnName]));
+
+  return {
+    query,
+    select,
+    column,
+
+    addBeforeCloseListener: listener => beforeCloseListeners.push(listener),
+
+    close: () =>
+      beforeCloseListeners
+        .reduce(
+          (promise, listener) =>
+            promise.then(listener).catch(err => log(err.stack || err)),
+          Promise.resolve()
+        )
+        .then(() => {
+          clientActive = false;
+          if (client) {
+            client.end();
+          }
+        })
+  };
+}; /*
+    This file just manages the database connection and provides a query method
+    */
